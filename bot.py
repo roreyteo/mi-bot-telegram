@@ -120,9 +120,25 @@ async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("📄 Solo puedo analizar archivos de texto por ahora.")
 
-# Main
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot corriendo")
+    def log_message(self, format, *args):
+        pass
+
+def run_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    server.serve_forever()
+
 if __name__ == "__main__":
     TOKEN = os.environ["TELEGRAM_TOKEN"]
+    threading.Thread(target=run_server, daemon=True).start()
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
