@@ -6,7 +6,8 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Clientes
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
 
 # Historial por usuario (memoria)
 historial = {}
