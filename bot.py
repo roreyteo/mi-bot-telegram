@@ -1,13 +1,14 @@
 import os
-import anthropic
 import requests
 import base64
+from groq import Groq
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 
-# Clientes
-claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
+# Cliente Groq
+cliente = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 # Historial por usuario (memoria)
 historial = {}
@@ -47,15 +48,13 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"🔍 Buscando: {query}...")
 
-    # Búsqueda con DuckDuckGo (gratis, sin API key)
     url = f"https://api.duckduckgo.com/?q={query}&format=json&no_html=1&skip_disambig=1"
     res = requests.get(url).json()
     resumen = res.get("AbstractText") or res.get("Answer") or "No encontré un resumen directo."
 
-    # Claude analiza el resultado
     mensajes = [{"role": "user", "content": f"El usuario buscó: '{query}'. Resultado encontrado: '{resumen}'. Explícalo de forma clara y útil en español."}]
-    respuesta = claude.messages.create(model="claude-sonnet-4-20250514", max_tokens=500, messages=mensajes)
-    await update.message.reply_text(respuesta.content[0].text)
+    respuesta = cliente.chat.completions.create(model="llama-3.3-70b-versatile", max_tokens=500, messages=mensajes)
+    await update.message.reply_text(respuesta.choices[0].message.content)
 
 # Mensajes de texto normales
 async def mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -65,46 +64,31 @@ async def mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msgs.append({"role": "user", "content": texto})
 
-    # Limitar historial a 20 mensajes
     if len(msgs) > 20:
         msgs = msgs[-20:]
         historial[user_id] = msgs
 
-    respuesta = claude.messages.create(
-        model="claude-sonnet-4-20250514",
+    respuesta = cliente.chat.completions.create(
+        model="llama-3.3-70b-versatile",
         max_tokens=1000,
-        system="Eres un asistente amigable y útil. Respondes en el idioma del usuario. Eres conciso pero completo.",
-        messages=msgs
+        messages=[{"role": "system", "content": "Eres un asistente amigable y útil. Respondes en el idioma del usuario. Eres conciso pero completo."}] + msgs
     )
-    texto_respuesta = respuesta.content[0].text
+    texto_respuesta = respuesta.choices[0].message.content
     msgs.append({"role": "assistant", "content": texto_respuesta})
     await update.message.reply_text(texto_respuesta)
 
 # Imágenes
 async def imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🖼️ Analizando imagen...")
-
-    photo = update.message.photo[-1]  # La de mayor resolución
-    file = await context.bot.get_file(photo.file_id)
-    img_bytes = await file.download_as_bytearray()
-    img_base64 = base64.standard_b64encode(img_bytes).decode("utf-8")
-
-    caption = update.message.caption or "Describe y analiza esta imagen en detalle."
-
-    respuesta = claude.messages.create(
-        model="claude-sonnet-4-20250514",
+    caption = update.message.caption or "Describe esta imagen."
+    respuesta = cliente.chat.completions.create(
+        model="llama-3.3-70b-versatile",
         max_tokens=1000,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_base64}},
-                {"type": "text", "text": caption}
-            ]
-        }]
+        messages=[{"role": "user", "content": caption}]
     )
-    await update.message.reply_text(respuesta.content[0].text)
+    await update.message.reply_text(respuesta.choices[0].message.content)
 
-# Archivos de texto/documentos
+# Documentos
 async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if doc.mime_type and "text" in doc.mime_type:
@@ -112,17 +96,14 @@ async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bytes_doc = await file.download_as_bytearray()
         texto_doc = bytes_doc.decode("utf-8", errors="ignore")[:3000]
         caption = update.message.caption or "Resume y analiza este documento."
-        respuesta = claude.messages.create(
-            model="claude-sonnet-4-20250514",
+        respuesta = cliente.chat.completions.create(
+            model="llama-3.3-70b-versatile",
             max_tokens=1000,
             messages=[{"role": "user", "content": f"{caption}\n\nContenido:\n{texto_doc}"}]
         )
-        await update.message.reply_text(respuesta.content[0].text)
+        await update.message.reply_text(respuesta.choices[0].message.content)
     else:
         await update.message.reply_text("📄 Solo puedo analizar archivos de texto por ahora.")
-
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
