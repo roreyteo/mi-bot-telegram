@@ -13,6 +13,7 @@ cliente = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 # Historial por usuario (memoria)
 historial = {}
+ultimo_pdf = {}
 
 def get_historial(user_id):
     if user_id not in historial:
@@ -27,11 +28,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Responder preguntas con AI\n"
         "• Buscar info en internet\n"
         "• Leer y analizar PDFs\n"
+        "• Generar prompts para videos e imágenes\n"
         "• Recordar nuestra conversación\n\n"
         "Comandos:\n"
         "/start - Inicio\n"
         "/reset - Borrar historial\n"
-        "/buscar [tema] - Buscar en internet"
+        "/buscar [tema] - Buscar en internet\n"
+        "/contenido - Generar prompts del último PDF"
     )
 
 # Comando /reset
@@ -56,6 +59,44 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(respuesta.choices[0].message.content)
     except Exception as e:
         await update.message.reply_text(f"❌ Error al buscar: {e}")
+
+# Comando /contenido - genera prompts del último PDF
+async def contenido(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ultimo_pdf:
+        await update.message.reply_text("⚠️ Primero envíame un PDF para generar contenido.")
+        return
+
+    texto = ultimo_pdf[user_id]
+    await update.message.reply_text("🎨 Generando prompts de contenido, espera...")
+
+    prompt = f"""Basándote en este texto:
+
+{texto[:2000]}
+
+Genera lo siguiente en español:
+
+🎬 PROMPT VIDEO ANIME:
+Un prompt detallado en inglés para generar un video corto estilo anime con animación fluida que ilustre la idea principal del texto. Incluye: escena, personajes, colores, movimiento, ambiente.
+
+🖼️ PROMPT IMAGEN:
+Un prompt detallado en inglés para generar una imagen artística estilo anime con una reflexión visual del texto. Incluye: composición, iluminación, estilo, elementos simbólicos.
+
+📱 PLANTILLA REDES SOCIALES:
+Un texto corto impactante (máximo 5 líneas) con la reflexión principal del texto, listo para publicar en Instagram o TikTok. Incluye emojis relevantes.
+
+💬 FRASE REFLEXIÓN:
+Una frase poderosa y profunda de máximo 2 líneas que capture la esencia del texto."""
+
+    try:
+        respuesta = cliente.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            max_tokens=1500,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        await update.message.reply_text(respuesta.choices[0].message.content)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando contenido: {e}")
 
 # Mensajes de texto normales
 async def mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -89,7 +130,6 @@ async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await context.bot.get_file(doc.file_id, read_timeout=60, write_timeout=60, connect_timeout=60)
         bytes_doc = await file.download_as_bytearray()
 
-        # Detectar PDF por nombre o mime_type
         es_pdf = mime == "application/pdf" or nombre.lower().endswith(".pdf")
 
         if es_pdf:
@@ -107,6 +147,10 @@ async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Tipo de archivo no soportado: {mime}")
             return
 
+        # Guardar el texto del PDF para usarlo con /contenido
+        user_id = update.effective_user.id
+        ultimo_pdf[user_id] = texto_doc
+
         caption = update.message.caption or "Resume y analiza este documento en detalle."
         respuesta = cliente.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -114,6 +158,7 @@ async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages=[{"role": "user", "content": f"{caption}\n\nContenido:\n{texto_doc}"}]
         )
         await update.message.reply_text(respuesta.choices[0].message.content)
+        await update.message.reply_text("💡 Escribe /contenido para generar prompts de video, imagen y redes sociales de este PDF.")
     except Exception as e:
         await update.message.reply_text(f"❌ Error procesando documento: {e}")
 
@@ -137,6 +182,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("buscar", buscar))
+    app.add_handler(CommandHandler("contenido", contenido))
     app.add_handler(MessageHandler(filters.Document.ALL, documento))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje))
     print("Bot corriendo...")
