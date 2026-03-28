@@ -81,12 +81,18 @@ async def mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Documentos y PDFs
 async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    await update.message.reply_text("📄 Procesando documento, espera un momento...")
+    mime = doc.mime_type or "desconocido"
+    nombre = doc.file_name or "sin nombre"
+    await update.message.reply_text(f"📄 Archivo recibido: {nombre}\nTipo: {mime}\nProcesando...")
+
     try:
         file = await context.bot.get_file(doc.file_id, read_timeout=60, write_timeout=60, connect_timeout=60)
         bytes_doc = await file.download_as_bytearray()
 
-        if doc.mime_type == "application/pdf":
+        # Detectar PDF por nombre o mime_type
+        es_pdf = mime == "application/pdf" or nombre.lower().endswith(".pdf")
+
+        if es_pdf:
             pdf_reader = PdfReader(io.BytesIO(bytes(bytes_doc)))
             texto_doc = ""
             for page in pdf_reader.pages:
@@ -95,10 +101,10 @@ async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not texto_doc.strip():
                 await update.message.reply_text("❌ No pude extraer texto. Puede ser un PDF escaneado.")
                 return
-        elif doc.mime_type and "text" in doc.mime_type:
+        elif "text" in mime:
             texto_doc = bytes_doc.decode("utf-8", errors="ignore")[:4000]
         else:
-            await update.message.reply_text("❌ Solo puedo leer PDFs y archivos de texto.")
+            await update.message.reply_text(f"❌ Tipo de archivo no soportado: {mime}")
             return
 
         caption = update.message.caption or "Resume y analiza este documento en detalle."
