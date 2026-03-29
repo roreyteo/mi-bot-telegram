@@ -3,12 +3,13 @@ import requests
 import io
 from pypdf import PdfReader
 from groq import Groq
+import replicate
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
-# Cliente Groq
+# Clientes
 cliente = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 # Historial por usuario (memoria)
@@ -29,12 +30,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Buscar info en internet\n"
         "• Leer y analizar PDFs\n"
         "• Generar prompts para videos e imágenes\n"
-        "• Recordar nuestra conversación\n\n"
+        "• Generar imágenes anime directo aquí\n\n"
         "Comandos:\n"
         "/start - Inicio\n"
         "/reset - Borrar historial\n"
         "/buscar [tema] - Buscar en internet\n"
-        "/contenido - Generar prompts del último PDF"
+        "/contenido - Generar prompts del último PDF\n"
+        "/imagen [descripción] - Generar imagen anime"
     )
 
 # Comando /reset
@@ -59,6 +61,30 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(respuesta.choices[0].message.content)
     except Exception as e:
         await update.message.reply_text(f"❌ Error al buscar: {e}")
+
+# Comando /imagen - genera imagen anime con Replicate
+async def generar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prompt = " ".join(context.args)
+    if not prompt:
+        await update.message.reply_text("Usa: /imagen [descripción en inglés]\nEjemplo: /imagen a monk meditating under cherry blossoms, anime style")
+        return
+    await update.message.reply_text("🎨 Generando imagen anime, espera unos segundos...")
+    try:
+        output = replicate.run(
+            "cjwbw/anything-v3-better-vae:09a5805203f4c12da649ec1923bb7729517ca25fcac790e640eaa9ed66573b65",
+            input={
+                "prompt": f"{prompt}, anime style, high quality, detailed, beautiful",
+                "negative_prompt": "ugly, blurry, bad anatomy, low quality",
+                "width": 512,
+                "height": 512,
+                "num_inference_steps": 30
+            }
+        )
+        imagen_url = output[0] if isinstance(output, list) else output
+        img_data = requests.get(imagen_url).content
+        await update.message.reply_photo(photo=img_data, caption=f"🎨 {prompt}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando imagen: {e}")
 
 # Comando /contenido - genera prompts del último PDF
 async def contenido(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -95,6 +121,7 @@ Una frase poderosa y profunda de máximo 2 líneas que capture la esencia del te
             messages=[{"role": "user", "content": prompt}]
         )
         await update.message.reply_text(respuesta.choices[0].message.content)
+        await update.message.reply_text("💡 Copia el PROMPT IMAGEN y úsalo con /imagen [prompt] para generar la imagen aquí.")
     except Exception as e:
         await update.message.reply_text(f"❌ Error generando contenido: {e}")
 
@@ -147,7 +174,6 @@ async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Tipo de archivo no soportado: {mime}")
             return
 
-        # Guardar el texto del PDF para usarlo con /contenido
         user_id = update.effective_user.id
         ultimo_pdf[user_id] = texto_doc
 
@@ -158,7 +184,7 @@ async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages=[{"role": "user", "content": f"{caption}\n\nContenido:\n{texto_doc}"}]
         )
         await update.message.reply_text(respuesta.choices[0].message.content)
-        await update.message.reply_text("💡 Escribe /contenido para generar prompts de video, imagen y redes sociales de este PDF.")
+        await update.message.reply_text("💡 Escribe /contenido para generar prompts de video, imagen y redes sociales.\n🎨 Escribe /imagen [descripción] para generar una imagen anime.")
     except Exception as e:
         await update.message.reply_text(f"❌ Error procesando documento: {e}")
 
@@ -183,6 +209,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("buscar", buscar))
     app.add_handler(CommandHandler("contenido", contenido))
+    app.add_handler(CommandHandler("imagen", generar_imagen))
     app.add_handler(MessageHandler(filters.Document.ALL, documento))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje))
     print("Bot corriendo...")
