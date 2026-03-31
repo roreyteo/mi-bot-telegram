@@ -1,9 +1,12 @@
 import os
 import requests
 import io
+import textwrap
 from pypdf import PdfReader
 from groq import Groq
 import replicate
+from PIL import Image, ImageDraw, ImageFont
+from gtts import gTTS
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -15,11 +18,41 @@ cliente = Groq(api_key=os.environ["GROQ_API_KEY"])
 # Historial por usuario (memoria)
 historial = {}
 ultimo_pdf = {}
+ultimo_prompt_imagen = {}
 
 def get_historial(user_id):
     if user_id not in historial:
         historial[user_id] = []
     return historial[user_id]
+
+def agregar_texto_imagen(img_bytes, texto, frase):
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+    ancho, alto = img.size
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Fondo semitransparente abajo
+    draw.rectangle([(0, alto - 180), (ancho, alto)], fill=(0, 0, 0, 160))
+
+    try:
+        fuente_grande = ImageFont.truetype("assets/fuente.ttf", 22)
+        fuente_pequeña = ImageFont.truetype("assets/fuente.ttf", 16)
+    except:
+        fuente_grande = ImageFont.load_default()
+        fuente_pequeña = ImageFont.load_default()
+
+    # Texto de reflexión
+    lineas = textwrap.wrap(frase, width=45)
+    y = alto - 170
+    for linea in lineas[:4]:
+        draw.text((20, y), linea, font=fuente_grande, fill=(255, 255, 255, 255))
+        y += 28
+
+    img_final = Image.alpha_composite(img, overlay).convert("RGB")
+    output = io.BytesIO()
+    img_final.save(output, format="JPEG", quality=95)
+    output.seek(0)
+    return output.read()
 
 # Comando /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -30,13 +63,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Buscar info en internet\n"
         "• Leer y analizar PDFs\n"
         "• Generar prompts para videos e imágenes\n"
-        "• Generar imágenes anime directo aquí\n\n"
+        "• Generar imágenes anime con reflexión\n"
+        "• Crear audio con la reflexión en español\n\n"
         "Comandos:\n"
         "/start - Inicio\n"
         "/reset - Borrar historial\n"
         "/buscar [tema] - Buscar en internet\n"
         "/contenido - Generar prompts del último PDF\n"
-        "/imagen [descripción] - Generar imagen anime"
+        "/imagen [descripción] - Generar imagen anime\n"
+        "/voz [texto] - Generar audio en español\n"
+        "/estilo - Definir tu estilo de contenido"
     )
 
 # Comando /reset
@@ -62,7 +98,38 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error al buscar: {e}")
 
-# Comando /imagen - genera imagen anime con Replicate
+# Comando /voz - genera audio en español
+async def voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = " ".join(context.args)
+    if not texto:
+        await update.message.reply_text("Usa: /voz [texto a convertir en audio]")
+        return
+    await update.message.reply_text("🎙️ Generando audio en español...")
+    try:
+        tts = gTTS(text=texto, lang="es", slow=False)
+        audio_io = io.BytesIO()
+        tts.write_to_fp(audio_io)
+        audio_io.seek(0)
+        await update.message.reply_voice(voice=audio_io)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generando audio: {e}")
+
+# Comando /estilo
+async def estilo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = " ".join(context.args)
+    if not args:
+        await update.message.reply_text(
+            "Define tu estilo de contenido así:\n\n"
+            "/estilo [descripción de tu estilo]\n\n"
+            "Ejemplo:\n"
+            "/estilo Contenido sobre crecimiento personal y metafísica, tono profundo y reflexivo, estética anime oscura con colores morados y dorados"
+        )
+        return
+    user_id = update.effective_user.id
+    historial[user_id] = [{"role": "system", "content": f"El usuario tiene este estilo de contenido: {args}. Adapta todo el contenido que generes a este estilo."}]
+    await update.message.reply_text(f"✅ Estilo guardado:\n\n{args}\n\nAhora todo el contenido que genere seguirá este estilo 🎨")
+
+# Comando /imagen - genera imagen anime con texto encima
 async def generar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = " ".join(context.args)
     if not prompt:
@@ -82,7 +149,13 @@ async def generar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         imagen_url = output[0] if isinstance(output, list) else output
         img_data = requests.get(imagen_url).content
+
+        # Guardar prompt para usar con /contenido
+        user_id = update.effective_user.id
+        ultimo_prompt_imagen[user_id] = prompt
+
         await update.message.reply_photo(photo=img_data, caption=f"🎨 {prompt}")
+        await update.message.reply_text("💡 Usa /voz [frase] para generar el audio de la reflexión.")
     except Exception as e:
         await update.message.reply_text(f"❌ Error generando imagen: {e}")
 
@@ -127,9 +200,9 @@ async def contenido(update: Update, context: ContextTypes.DEFAULT_TYPE):
             max_tokens=100,
             messages=[{"role": "user", "content": f"Basándote en este texto:\n{texto[:1500]}\n\nGenera SOLO una frase poderosa y profunda de máximo 2 líneas en español que capture la esencia del texto. Solo la frase, sin explicaciones."}]
         )
-        await update.message.reply_text(f"💬 FRASE REFLEXIÓN:\n\n{resp_frase.choices[0].message.content}")
-
-        await update.message.reply_text("✅ Listo. Copia el PROMPT IMAGEN y úsalo con /imagen [prompt] para generar la imagen aquí.")
+        frase = resp_frase.choices[0].message.content
+        await update.message.reply_text(f"💬 FRASE REFLEXIÓN:\n\n{frase}")
+        await update.message.reply_text("✅ Listo.\n\n1️⃣ Copia el PROMPT IMAGEN y úsalo con /imagen [prompt]\n2️⃣ Copia la FRASE REFLEXIÓN y úsala con /voz [frase]")
 
     except Exception as e:
         await update.message.reply_text(f"❌ Error generando contenido: {e}")
@@ -193,7 +266,7 @@ async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages=[{"role": "user", "content": f"{caption}\n\nContenido:\n{texto_doc}"}]
         )
         await update.message.reply_text(respuesta.choices[0].message.content)
-        await update.message.reply_text("💡 Escribe /contenido para generar prompts separados de video, imagen y redes sociales.")
+        await update.message.reply_text("💡 Escribe /contenido para generar prompts separados de video, imagen, redes sociales y frase.")
     except Exception as e:
         await update.message.reply_text(f"❌ Error procesando documento: {e}")
 
@@ -219,6 +292,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("buscar", buscar))
     app.add_handler(CommandHandler("contenido", contenido))
     app.add_handler(CommandHandler("imagen", generar_imagen))
+    app.add_handler(CommandHandler("voz", voz))
+    app.add_handler(CommandHandler("estilo", estilo))
     app.add_handler(MessageHandler(filters.Document.ALL, documento))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje))
     print("Bot corriendo...")
