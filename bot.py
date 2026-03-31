@@ -86,7 +86,7 @@ async def generar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error generando imagen: {e}")
 
-# Comando /contenido - genera prompts del último PDF
+# Comando /contenido - genera prompts separados del último PDF
 async def contenido(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ultimo_pdf:
@@ -94,34 +94,43 @@ async def contenido(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     texto = ultimo_pdf[user_id]
-    await update.message.reply_text("🎨 Generando prompts de contenido, espera...")
-
-    prompt = f"""Basándote en este texto:
-
-{texto[:2000]}
-
-Genera lo siguiente en español:
-
-🎬 PROMPT VIDEO ANIME:
-Un prompt detallado en inglés para generar un video corto estilo anime con animación fluida que ilustre la idea principal del texto. Incluye: escena, personajes, colores, movimiento, ambiente.
-
-🖼️ PROMPT IMAGEN:
-Un prompt detallado en inglés para generar una imagen artística estilo anime con una reflexión visual del texto. Incluye: composición, iluminación, estilo, elementos simbólicos.
-
-📱 PLANTILLA REDES SOCIALES:
-Un texto corto impactante (máximo 5 líneas) con la reflexión principal del texto, listo para publicar en Instagram o TikTok. Incluye emojis relevantes.
-
-💬 FRASE REFLEXIÓN:
-Una frase poderosa y profunda de máximo 2 líneas que capture la esencia del texto."""
+    await update.message.reply_text("🎨 Generando contenido, espera un momento...")
 
     try:
-        respuesta = cliente.chat.completions.create(
+        # Prompt de video anime
+        resp_video = cliente.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            max_tokens=1500,
-            messages=[{"role": "user", "content": prompt}]
+            max_tokens=300,
+            messages=[{"role": "user", "content": f"Basándote en este texto:\n{texto[:1500]}\n\nGenera SOLO un prompt detallado en inglés para crear un video corto estilo anime. Incluye: escena, personajes, colores, movimiento, ambiente. Solo el prompt, sin explicaciones."}]
         )
-        await update.message.reply_text(respuesta.choices[0].message.content)
-        await update.message.reply_text("💡 Copia el PROMPT IMAGEN y úsalo con /imagen [prompt] para generar la imagen aquí.")
+        await update.message.reply_text(f"🎬 PROMPT VIDEO ANIME:\n\n{resp_video.choices[0].message.content}")
+
+        # Prompt de imagen
+        resp_imagen = cliente.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            max_tokens=300,
+            messages=[{"role": "user", "content": f"Basándote en este texto:\n{texto[:1500]}\n\nGenera SOLO un prompt detallado en inglés para crear una imagen artística estilo anime. Incluye: composición, iluminación, estilo, elementos simbólicos. Solo el prompt, sin explicaciones."}]
+        )
+        await update.message.reply_text(f"🖼️ PROMPT IMAGEN ANIME:\n\n{resp_imagen.choices[0].message.content}")
+
+        # Plantilla redes sociales
+        resp_redes = cliente.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            max_tokens=200,
+            messages=[{"role": "user", "content": f"Basándote en este texto:\n{texto[:1500]}\n\nGenera SOLO un texto corto impactante (máximo 5 líneas) listo para publicar en Instagram o TikTok en español. Incluye emojis relevantes. Solo el texto, sin explicaciones."}]
+        )
+        await update.message.reply_text(f"📱 PLANTILLA REDES SOCIALES:\n\n{resp_redes.choices[0].message.content}")
+
+        # Frase reflexión
+        resp_frase = cliente.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            max_tokens=100,
+            messages=[{"role": "user", "content": f"Basándote en este texto:\n{texto[:1500]}\n\nGenera SOLO una frase poderosa y profunda de máximo 2 líneas en español que capture la esencia del texto. Solo la frase, sin explicaciones."}]
+        )
+        await update.message.reply_text(f"💬 FRASE REFLEXIÓN:\n\n{resp_frase.choices[0].message.content}")
+
+        await update.message.reply_text("✅ Listo. Copia el PROMPT IMAGEN y úsalo con /imagen [prompt] para generar la imagen aquí.")
+
     except Exception as e:
         await update.message.reply_text(f"❌ Error generando contenido: {e}")
 
@@ -184,7 +193,7 @@ async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages=[{"role": "user", "content": f"{caption}\n\nContenido:\n{texto_doc}"}]
         )
         await update.message.reply_text(respuesta.choices[0].message.content)
-        await update.message.reply_text("💡 Escribe /contenido para generar prompts de video, imagen y redes sociales.\n🎨 Escribe /imagen [descripción] para generar una imagen anime.")
+        await update.message.reply_text("💡 Escribe /contenido para generar prompts separados de video, imagen y redes sociales.")
     except Exception as e:
         await update.message.reply_text(f"❌ Error procesando documento: {e}")
 
