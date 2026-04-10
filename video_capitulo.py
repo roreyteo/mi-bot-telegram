@@ -1,14 +1,16 @@
 import io, os, tempfile
 from gtts import gTTS
 from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeAudioClip
+from PIL import Image
 
 def generar_video_capitulo(imagenes_bytes, texto_narracion, titulo_capitulo, ruta_musica=None):
     with tempfile.TemporaryDirectory() as tmp:
         rutas_imgs = []
         for i, img_bytes in enumerate(imagenes_bytes):
+            img = Image.open(io.BytesIO(img_bytes))
+            img = img.resize((1080, 1080), Image.LANCZOS)
             ruta = os.path.join(tmp, f"img_{i}.jpg")
-            with open(ruta, "wb") as f:
-                f.write(img_bytes)
+            img.save(ruta, "JPEG", quality=92)
             rutas_imgs.append(ruta)
 
         ruta_voz = os.path.join(tmp, "voz.mp3")
@@ -19,7 +21,10 @@ def generar_video_capitulo(imagenes_bytes, texto_narracion, titulo_capitulo, rut
         duracion_total = audio_voz.duration
         duracion_por_imagen = duracion_total / len(rutas_imgs)
 
-        clips = [ImageClip(r).set_duration(duracion_por_imagen).resize((1080,1080)).fadein(0.5).fadeout(0.5) for r in rutas_imgs]
+        clips = [
+            ImageClip(r).set_duration(duracion_por_imagen).fadein(0.5).fadeout(0.5)
+            for r in rutas_imgs
+        ]
         video = concatenate_videoclips(clips, method="compose")
 
         audios = [audio_voz]
