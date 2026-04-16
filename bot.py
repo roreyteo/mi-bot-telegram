@@ -3,11 +3,9 @@ import requests
 import io
 import fcntl
 import sys
-import textwrap
 from pypdf import PdfReader
 from groq import Groq
 import replicate
-from PIL import Image, ImageDraw, ImageFont
 from gtts import gTTS
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -15,14 +13,14 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
 from capitulos import detectar_capitulos
-from plantillas import generar_plantillas_capitulo
 from video_capitulo import generar_video_capitulo
 from prompt_comprimido import comprimir_para_imagen, comprimir_para_video, detectar_tema
 
 cliente = Groq(api_key=os.environ["GROQ_API_KEY"])
 historial = {}
 ultimo_pdf = {}
-ultimo_prompt_imagen = {}
+ideas_por_capitulo = {}
+imagenes_por_capitulo = {}
 RUTA_MUSICA = "assets/musica.mp3"
 
 def verificar_instancia_unica():
@@ -30,7 +28,7 @@ def verificar_instancia_unica():
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except IOError:
-        print("❌ Ya hay una instancia corriendo. Cerrando.")
+        print("❌ Ya hay una instancia corriendo.")
         sys.exit(1)
 
 def get_historial(user_id):
@@ -38,89 +36,213 @@ def get_historial(user_id):
         historial[user_id] = []
     return historial[user_id]
 
-async def procesar_pdf_por_capitulos(update: Update, texto_completo: str):
-    user_id = update.effective_user.id
-    capitulos = detectar_capitulos(texto_completo)
+ESTILOS = {
+    "anime":      "anime style, cel shading, vibrant, 2D illustration, masterpiece",
+    "cinematico": "cinematic, 8K, dramatic lighting, anamorphic lens, masterpiece",
+    "oscuro":     "dark fantasy, moody, noir, chiaroscuro, deep shadows, masterpiece",
+    "espiritual": "ethereal, mystical, sacred geometry, glowing aura, masterpiece",
+    "acuarela":   "watercolor painting, soft edges, painterly, artistic, masterpiece",
+}
+NEGATIVOS = "ugly, blurry, deformed, bad anatomy, watermark, low quality, pixelated, nsfw"
+
+def elegir_estilo(texto):
+    texto = texto.lower()
+    if any(p in texto for p in ["guerra","muerte","oscuro","miedo","sombra","dolor"]):
+        return "oscuro"
+    elif any(p in texto for p in ["espiritu","alma","dios","meditacion","paz","sagrado"]):
+        return "espiritual"
+    elif any(p in texto for p in ["historia","real","vida","persona","mundo","tiempo"]):
+        return "cinematico"
+    elif any(p in texto for p in ["arte","color","naturaleza","suave","belleza"]):
+        return "acuarela"
+    else:
+        return "anime"
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"📚 Detecté *{len(capitulos)} capítulos/secciones*.\nProcesando... ⏳",
-        parse_mode="Markdown"
+        "¡Hola! Soy tu asistente AI 🤖\n\n"
+        "📄 Sube un PDF y usa los comandos:\n\n"
+        "/ideas — Extrae ideas principales por capítulo\n"
+        "/imagenes — Genera imágenes de las ideas\n"
+        "/video — Genera video con voz + música\n\n"
+        "Otros comandos:\n"
+        "/start - Inicio\n"
+        "/reset - Borrar historial\n"
+        "/buscar [tema] - Buscar en internet\n"
+        "/imagen [descripción] - Imagen suelta\n"
+        "/voz [texto] - Audio en español\n"
+        "/estilo - Definir estilo"
     )
+
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    historial[user_id] = []
+    ideas_por_capitulo.pop(user_id, None)
+    imagenes_por_capitulo.pop(user_id, None)
+    await update.message.reply_text("✅ Todo borrado. Empieza subiendo un PDF.")
+
+async def cmd_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ultimo_pdf:
+        await update.message.reply_text("⚠️ Primero sube un PDF.")
+        return
+
+    await update.message.reply_text("🧠 Analizando capítulos y extrayendo ideas...")
+
+    texto_completo = ultimo_pdf[user_id]
+    capitulos = detectar_capitulos(texto_completo)
+    ideas_por_capitulo[user_id] = []
+
     for idx, cap in enumerate(capitulos):
-        titulo = cap["titulo"]
-        texto = cap["texto"]
-        await update.message.reply_text(f"📖 Procesando: *{titulo}*...", parse_mode="Markdown")
         try:
             resp = cliente.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                max_tokens=300,
+                max_tokens=400,
                 messages=[{"role": "user", "content": (
-                    f"Del texto '{titulo}' extrae en español:\n"
-                    f"1. IDEA PRINCIPAL (máximo 2 oraciones)\n"
-                    f"2. MORALEJA (máximo 1 oración poderosa)\n\n"
-                    f"Responde EXACTAMENTE así:\n"
-                    f"IDEA: [idea]\nMORALEJA: [moraleja]\n\nTexto:\n{texto[:2000]}"
+                    f"Del siguiente capítulo '{cap['titulo']}' extrae SOLO las ideas principales necesarias "
+                    f"(no inventes, solo las que realmente están). "
+                    f"Responde en este formato exacto:\n"
+                    f"IDEAS:\n- idea 1\n- idea 2\n- idea 3 (solo las necesarias)\n"
+                    f"NARRACION: [historia dramática de 3-4 oraciones que capture la esencia del capítulo]\n\n"
+                    f"Texto:\n{cap['texto'][:2000]}"
                 )}]
             )
             contenido = resp.choices[0].message.content
-            idea = ""
-            moraleja = ""
+            ideas = []
+            narracion = ""
+            seccion = ""
             for linea in contenido.split("\n"):
-                if linea.startswith("IDEA:"):
-                    idea = linea.replace("IDEA:", "").strip()
-                elif linea.startswith("MORALEJA:"):
-                    moraleja = linea.replace("MORALEJA:", "").strip()
-            if not idea:
-                idea = texto[:150]
-            if not moraleja:
-                moraleja = idea[:80]
+                if linea.startswith("IDEAS:"):
+                    seccion = "ideas"
+                elif linea.startswith("NARRACION:"):
+                    narracion = linea.replace("NARRACION:", "").strip()
+                    seccion = "narracion"
+                elif linea.startswith("- ") and seccion == "ideas":
+                    ideas.append(linea.replace("- ", "").strip())
+
+            ideas_por_capitulo[user_id].append({
+                "titulo": cap["titulo"],
+                "ideas": ideas,
+                "narracion": narracion,
+                "texto": cap["texto"]
+            })
+
+            msg = f"📖 *{cap['titulo']}*\n\n"
+            for i, idea in enumerate(ideas):
+                msg += f"💡 {i+1}. {idea}\n"
+            msg += f"\n🎭 _{narracion}_"
+            await update.message.reply_text(msg, parse_mode="Markdown")
+
         except Exception as e:
-            await update.message.reply_text(f"⚠️ Error analizando cap. {idx+1}: {e}")
+            await update.message.reply_text(f"⚠️ Error en cap. {idx+1}: {e}")
+
+    await update.message.reply_text(
+        f"✅ Ideas extraídas de {len(capitulos)} capítulos.\n\n"
+        "Ahora usa /imagenes para generar las imágenes 🎨"
+    )
+
+async def cmd_imagenes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ideas_por_capitulo or not ideas_por_capitulo[user_id]:
+        await update.message.reply_text("⚠️ Primero usa /ideas para extraer las ideas del PDF.")
+        return
+
+    await update.message.reply_text("🎨 Generando imágenes por capítulo...")
+    imagenes_por_capitulo[user_id] = []
+
+    for idx, cap in enumerate(ideas_por_capitulo[user_id]):
+        titulo = cap["titulo"]
+        ideas = cap["ideas"]
+        texto = cap["texto"]
+
+        if not ideas:
+            imagenes_por_capitulo[user_id].append({"titulo": titulo, "imagenes": [], "narracion": cap["narracion"]})
             continue
+
+        await update.message.reply_text(f"🖼️ Generando imágenes: *{titulo}*...", parse_mode="Markdown")
+
+        estilo = elegir_estilo(texto)
+        imagenes_cap = []
+
+        for idea in ideas:
+            try:
+                tema = detectar_tema(idea)
+                params = comprimir_para_imagen(idea=idea, estilo=estilo, tema=tema, width=512, height=512)
+                output = replicate.run(
+                    "cjwbw/anything-v3-better-vae:09a5805203f4c12da649ec1923bb7729517ca25fcac790e640eaa9ed66573b65",
+                    input=params
+                )
+                imagen_url = output[0] if isinstance(output, list) else output
+                img_data = requests.get(imagen_url).content
+                imagenes_cap.append(img_data)
+                await update.message.reply_photo(
+                    photo=io.BytesIO(img_data),
+                    caption=f"🎨 {idea[:100]}"
+                )
+            except Exception as e:
+                await update.message.reply_text(f"⚠️ Error imagen '{idea[:40]}': {e}")
+
+        imagenes_por_capitulo[user_id].append({
+            "titulo": titulo,
+            "imagenes": imagenes_cap,
+            "narracion": cap["narracion"]
+        })
+
+    await update.message.reply_text(
+        "✅ Imágenes generadas.\n\n"
+        "Ahora usa /video para generar los videos 🎬"
+    )
+
+async def cmd_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in imagenes_por_capitulo or not imagenes_por_capitulo[user_id]:
+        await update.message.reply_text("⚠️ Primero usa /imagenes para generar las imágenes.")
+        return
+
+    await update.message.reply_text("🎬 Generando videos con voz dramática + música...")
+
+    for idx, cap in enumerate(imagenes_por_capitulo[user_id]):
+        titulo = cap["titulo"]
+        imagenes = cap["imagenes"]
+        narracion = cap["narracion"]
+
+        if not imagenes:
+            await update.message.reply_text(f"⏭️ Saltando {titulo} — sin imágenes.")
+            continue
+
         try:
-            imagenes = generar_plantillas_capitulo(titulo, idea, moraleja, idx)
-            await update.message.reply_text(f"🖼️ *{titulo}* — Plantillas:", parse_mode="Markdown")
-            leyendas = [f"📌 Idea Principal — Cap. {idx+1}", f"💬 Moraleja — Cap. {idx+1}", f"✦ Idea Clave — Cap. {idx+1}"]
-            for i, img_bytes in enumerate(imagenes):
-                await update.message.reply_photo(photo=io.BytesIO(img_bytes), caption=leyendas[i])
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ Error en plantillas cap. {idx+1}: {e}")
-        try:
-            await update.message.reply_text(f"🎬 Generando video cap. {idx+1}...")
-            narracion = f"{titulo}. {idea}. {moraleja}"
+            await update.message.reply_text(f"🎬 Video: *{titulo}*...", parse_mode="Markdown")
+
             video_bytes = generar_video_capitulo(
                 imagenes_bytes=imagenes,
                 texto_narracion=narracion,
                 titulo_capitulo=titulo,
                 ruta_musica=RUTA_MUSICA
             )
+
+            # Descripción para redes sociales
+            resp_desc = cliente.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                max_tokens=150,
+                messages=[{"role": "user", "content": (
+                    f"Crea una descripción corta y atractiva para redes sociales (máximo 3 líneas) "
+                    f"del capítulo '{titulo}' con esta narración: '{narracion}'. "
+                    f"Incluye emojis y que genere curiosidad. Solo el texto, sin explicaciones."
+                )}]
+            )
+            descripcion = resp_desc.choices[0].message.content
+
             await update.message.reply_video(
                 video=io.BytesIO(video_bytes),
-                caption=f"🎬 {titulo}\n\n💬 {moraleja}",
+                caption=f"🎬 *{titulo}*\n\n{descripcion}",
+                parse_mode="Markdown",
                 width=1080, height=1080
             )
+
         except Exception as e:
-            await update.message.reply_text(f"⚠️ Error en video cap. {idx+1}: {e}")
-    await update.message.reply_text(
-        "✅ ¡PDF procesado!\n\n• 3 plantillas por capítulo\n• 1 video con voz por capítulo\n\nUsa /imagen o /video para más contenido 🚀"
-    )
+            await update.message.reply_text(f"⚠️ Error video cap. {idx+1}: {e}")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "¡Hola! Soy tu asistente AI 🤖\n\n"
-        "📄 Sube un PDF y proceso cada capítulo automáticamente.\n\n"
-        "Comandos:\n"
-        "/start - Inicio\n"
-        "/reset - Borrar historial\n"
-        "/buscar [tema] - Buscar en internet\n"
-        "/imagen [descripción] - Generar imagen\n"
-        "/video [descripción] - Generar video\n"
-        "/voz [texto] - Audio en español\n"
-        "/estilo - Definir estilo de contenido"
-    )
-
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    historial[update.effective_user.id] = []
-    await update.message.reply_text("✅ Historial borrado.")
+    await update.message.reply_text("✅ ¡Videos listos! 🚀")
 
 async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
@@ -145,7 +267,6 @@ async def voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not texto:
         await update.message.reply_text("Usa: /voz [texto]")
         return
-    await update.message.reply_text("🎙️ Generando audio...")
     try:
         tts = gTTS(text=texto, lang="es", slow=False)
         audio_io = io.BytesIO()
@@ -158,20 +279,21 @@ async def voz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def estilo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = " ".join(context.args)
     if not args:
-        await update.message.reply_text("Usa: /estilo [descripción]\nEjemplo: /estilo crecimiento personal, tono profundo, anime oscuro")
+        await update.message.reply_text("Usa: /estilo [descripción]")
         return
-    historial[update.effective_user.id] = [{"role": "system", "content": f"Estilo del usuario: {args}. Adapta todo el contenido a este estilo."}]
-    await update.message.reply_text(f"✅ Estilo guardado:\n{args}")
+    historial[update.effective_user.id] = [{"role": "system", "content": f"Estilo: {args}"}]
+    await update.message.reply_text(f"✅ Estilo guardado: {args}")
 
 async def generar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     descripcion = " ".join(context.args)
     if not descripcion:
-        await update.message.reply_text("Usa: /imagen [descripción]\nEjemplo: /imagen monje meditando bajo la lluvia")
+        await update.message.reply_text("Usa: /imagen [descripción]")
         return
     await update.message.reply_text("🎨 Generando imagen...")
     try:
+        estilo_elegido = elegir_estilo(descripcion)
         tema = detectar_tema(descripcion)
-        params = comprimir_para_imagen(idea=descripcion, estilo="anime", tema=tema, width=512, height=512)
+        params = comprimir_para_imagen(idea=descripcion, estilo=estilo_elegido, tema=tema, width=512, height=512)
         output = replicate.run(
             "cjwbw/anything-v3-better-vae:09a5805203f4c12da649ec1923bb7729517ca25fcac790e640eaa9ed66573b65",
             input=params
@@ -179,24 +301,6 @@ async def generar_imagen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         imagen_url = output[0] if isinstance(output, list) else output
         img_data = requests.get(imagen_url).content
         await update.message.reply_photo(photo=img_data, caption=f"🎨 {descripcion}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-
-async def generar_video_ia(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    descripcion = " ".join(context.args)
-    if not descripcion:
-        await update.message.reply_text("Usa: /video [descripción]\nEjemplo: /video guerrero caminando al amanecer")
-        return
-    await update.message.reply_text("🎬 Generando video (~1 min)...")
-    try:
-        params = comprimir_para_video(idea=descripcion, estilo="cinematico", duracion_seg=4)
-        output = replicate.run(
-            "anotherjesse/zeroscope-v2-xl:9f747673945c62801b13b84701c783929c0ee784e4748ec062204894dda1a351",
-            input=params
-        )
-        video_url = output[0] if isinstance(output, list) else output
-        video_data = requests.get(video_url).content
-        await update.message.reply_video(video=io.BytesIO(video_data), caption=f"🎬 {descripcion}")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
@@ -234,17 +338,16 @@ async def documento(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for page in pdf_reader.pages:
                 texto_doc += page.extract_text() or ""
             if not texto_doc.strip():
-                await update.message.reply_text("❌ No pude extraer texto. Puede ser escaneado.")
+                await update.message.reply_text("❌ No pude extraer texto.")
                 return
             ultimo_pdf[update.effective_user.id] = texto_doc
-            await procesar_pdf_por_capitulos(update, texto_doc)
-        elif "text" in mime:
-            texto_doc = bytes_doc.decode("utf-8", errors="ignore")[:4000]
-            resp = cliente.chat.completions.create(
-                model="llama-3.3-70b-versatile", max_tokens=1000,
-                messages=[{"role": "user", "content": f"Resume y analiza:\n{texto_doc}"}]
+            await update.message.reply_text(
+                "✅ PDF guardado correctamente.\n\n"
+                "Ahora usa:\n"
+                "/ideas — para extraer las ideas\n"
+                "/imagenes — para generar imágenes\n"
+                "/video — para generar el video"
             )
-            await update.message.reply_text(resp.choices[0].message.content)
         else:
             await update.message.reply_text(f"❌ Tipo no soportado: {mime}")
     except Exception as e:
@@ -270,8 +373,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("buscar", buscar))
+    app.add_handler(CommandHandler("ideas", cmd_ideas))
+    app.add_handler(CommandHandler("imagenes", cmd_imagenes))
+    app.add_handler(CommandHandler("video", cmd_video))
     app.add_handler(CommandHandler("imagen", generar_imagen))
-    app.add_handler(CommandHandler("video", generar_video_ia))
     app.add_handler(CommandHandler("voz", voz))
     app.add_handler(CommandHandler("estilo", estilo))
     app.add_handler(MessageHandler(filters.Document.ALL, documento))
